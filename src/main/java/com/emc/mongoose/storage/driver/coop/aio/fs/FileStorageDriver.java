@@ -5,19 +5,28 @@ import com.emc.mongoose.base.data.DataInput;
 import com.emc.mongoose.base.item.DataItem;
 import com.emc.mongoose.base.item.Item;
 import com.emc.mongoose.base.item.ItemFactory;
+import com.emc.mongoose.base.item.io.AsyncChannel;
 import com.emc.mongoose.base.item.op.OpType;
 import com.emc.mongoose.base.item.op.Operation;
 import com.emc.mongoose.base.item.op.data.DataOperation;
 import com.emc.mongoose.base.item.op.path.PathOperation;
 import com.emc.mongoose.base.logging.LogUtil;
 import com.emc.mongoose.base.storage.Credential;
-import com.emc.mongoose.storage.driver.coop.CoopStorageDriverBase;
-import com.emc.mongoose.storage.driver.coop.aio.AsyncChannel;
+import static com.emc.mongoose.base.Exceptions.throwUncheckedIfInterrupted;
+import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.CREATE_OPEN_OPT;
+import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.FS;
+import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.FS_PROVIDER;
+import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.READ_OPEN_OPT;
+import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.WRITE_OPEN_OPT;
+import com.emc.mongoose.storage.driver.coop.aio.AioStorageDriverBase;
+
 import com.github.akurilov.confuse.Config;
+
 import org.apache.logging.log4j.Level;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.channels.FileChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileSystemException;
 import java.nio.file.NoSuchFileException;
@@ -26,14 +35,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-import static com.emc.mongoose.base.Exceptions.throwUncheckedIfInterrupted;
-import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.CREATE_OPEN_OPT;
-import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.FS;
-import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.FS_PROVIDER;
-import static com.emc.mongoose.storage.driver.coop.aio.fs.FsConstants.WRITE_OPEN_OPT;
-
 public class FileStorageDriver<I extends Item, O extends Operation<I>>
-extends CoopStorageDriverBase<I, O> {
+extends AioStorageDriverBase<I, O> {
 
 	private final Map<DataOperation, AsyncChannel> srcOpenChannels = new ConcurrentHashMap<>();
 	private final Map<DataOperation, AsyncChannel> dstOpenChannels = new ConcurrentHashMap<>();
@@ -46,7 +49,23 @@ extends CoopStorageDriverBase<I, O> {
 		super(testStepId, dataInput, storageConfig, verifyFlag, batchSize);
 	}
 
-	protected <F extends DataItem, D extends DataOperation<F>> AsyncChannel openDstChan(final D dataOp) {
+	static AsyncChannel openSrcChan(final DataOperation<? extends DataItem> op) {
+		final String srcPath = op.srcPath();
+		if (srcPath == null || srcPath.isEmpty()) {
+			return null;
+		}
+		final String fileItemName = op.item().name();
+		final Path srcFilePath = fileItemName.startsWith(srcPath) ? FS.getPath(fileItemName) : FS.getPath(srcPath, fileItemName);
+		try {
+			return AsyncChannel.wrap(FS_PROVIDER.newAsynchronousFileChannel(srcFilePath, READ_OPEN_OPT, null));
+		} catch (final IOException e) {
+			LogUtil.exception(Level.WARN, e, "Failed to open the source channel for the path @ \"{}\"", srcFilePath);
+			op.status(Operation.Status.FAIL_IO);
+			return null;
+		}
+	}
+
+	protected AsyncChannel openDstChan(final DataOperation<? extends DataItem> dataOp) {
 		final var fileItemName = dataOp.item().name();
 		final var opType = dataOp.type();
 		final var dstPath = dataOp.dstPath();
@@ -103,6 +122,57 @@ extends CoopStorageDriverBase<I, O> {
 
 	final boolean submitDataOperation(final DataOperation<? extends DataItem> op) {
 
+		AsyncChannel srcChannel = null;
+		AsyncChannel dstChannel = null;
+		final OpType opType = op.type();
+		final DataItem item = op.item();
+
+		switch (opType) {
+			case NOOP:
+				finishOperation((O) op);
+				break;
+			case CREATE:
+				dstChannel = dstOpenChannels.computeIfAbsent(op, this::openDstChan);
+				srcChannel = srcOpenChannels.computeIfAbsent(op, FileStorageDriver::openSrcChan);
+				if (dstChannel == null) {
+					break;
+				}
+				if (srcChannel == null) {
+					if (op.status().equals(Operation.Status.FAIL_IO)) {
+						break;
+					} else {
+						if (invokeCreate(item, op, dstChannel)) {
+							finishOperation((O) op);
+						}
+					}
+				} else { // copy the data from the src channel to the dst channel
+					if (invokeCopy(item, op, srcChannel, dstChannel)) {
+						finishOperation((O) op);
+					}
+				}
+				break;
+				break;
+			case READ:
+				break;
+			case UPDATE:
+				break;
+			case DELETE:
+				break;
+			case LIST:
+				break;
+		}
+	}
+
+	final void finishOperation(final O op) {
+		try {
+			op.startResponse();
+			op.finishResponse();
+			op.status(Operation.Status.SUCC);
+		} catch (final IllegalStateException e) {
+			LogUtil.exception(
+				Level.WARN, e, "{}: finishing the load operation which is in an invalid state", op.toString());
+			op.status(Operation.Status.FAIL_UNKNOWN);
+		}
 	}
 
 	@Override

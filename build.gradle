@@ -21,11 +21,17 @@ plugins {
 repositories {
 	jcenter()
 	mavenCentral()
+	maven {
+		url "https://oss.sonatype.org/content/repositories/comgithubemc-mongoose-1371"
+	}
+	maven {
+		url "https://oss.sonatype.org/content/repositories/comgithubemc-mongoose-1372"
+	}
 }
 
 description = "Mongoose is a high-load storage performance testing tool"
 group = "com.github.emc-mongoose"
-version = "4.2.6"
+version = "4.2.7"
 sourceCompatibility = 11
 targetCompatibility = 11
 
@@ -39,8 +45,8 @@ ext {
 		javaCommons        : "2.3.5",
 		junit              : "4.12",
 		log4j              : "2.8.2",
-		mongooseBase       : "4.2.6",
-		mongooseStorageDriverCoop: "4.2.6",
+		mongooseBase       : "4.2.7",
+		mongooseStorageDriverCoop: "4.2.7",
 		scala              : "2.12.6",
 		slf4j              : "1.7.25",
 	]
