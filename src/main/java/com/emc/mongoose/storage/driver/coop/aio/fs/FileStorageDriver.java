@@ -26,7 +26,6 @@ import org.apache.logging.log4j.Level;
 
 import java.io.File;
 import java.io.IOException;
-import java.nio.channels.FileChannel;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.FileSystemException;
 import java.nio.file.NoSuchFileException;
@@ -38,8 +37,6 @@ import java.util.concurrent.ConcurrentHashMap;
 public class FileStorageDriver<I extends Item, O extends Operation<I>>
 extends AioStorageDriverBase<I, O> {
 
-	private final Map<DataOperation, AsyncChannel> srcOpenChannels = new ConcurrentHashMap<>();
-	private final Map<DataOperation, AsyncChannel> dstOpenChannels = new ConcurrentHashMap<>();
 	private final Map<String, File> dstParentDirs = new ConcurrentHashMap<>();
 
 	public FileStorageDriver(
@@ -47,9 +44,10 @@ extends AioStorageDriverBase<I, O> {
 		final int batchSize
 	) throws IllegalConfigurationException {
 		super(testStepId, dataInput, storageConfig, verifyFlag, batchSize);
+		requestAuthTokenFunc = null; // disable
 	}
 
-	static AsyncChannel openSrcChan(final DataOperation<? extends DataItem> op) {
+	protected AsyncChannel openSourceChannel(final DataOperation<? extends DataItem> op) {
 		final String srcPath = op.srcPath();
 		if (srcPath == null || srcPath.isEmpty()) {
 			return null;
@@ -65,7 +63,8 @@ extends AioStorageDriverBase<I, O> {
 		}
 	}
 
-	protected AsyncChannel openDstChan(final DataOperation<? extends DataItem> dataOp) {
+	protected AsyncChannel openDestinationChannel(final DataOperation<? extends DataItem> dataOp) {
+		System.out.println("open channel for " + dataOp.item().name() + ", " + dataOp.status() + ", " + dataOp.hashCode());
 		final var fileItemName = dataOp.item().name();
 		final var opType = dataOp.type();
 		final var dstPath = dataOp.dstPath();
@@ -109,85 +108,6 @@ extends AioStorageDriverBase<I, O> {
 	}
 
 	@Override
-	protected boolean submit(final O op)
-	throws IllegalStateException {
-		if (op instanceof DataOperation) {
-			return submitDataOperation((DataOperation<? extends DataItem>) op);
-		} else if (op instanceof PathOperation) {
-			throw new AssertionError("Not implemented");
-		} else {
-			throw new AssertionError("Not implemented");
-		}
-	}
-
-	final boolean submitDataOperation(final DataOperation<? extends DataItem> op) {
-
-		AsyncChannel srcChannel = null;
-		AsyncChannel dstChannel = null;
-		final OpType opType = op.type();
-		final DataItem item = op.item();
-
-		switch (opType) {
-			case NOOP:
-				finishOperation((O) op);
-				break;
-			case CREATE:
-				dstChannel = dstOpenChannels.computeIfAbsent(op, this::openDstChan);
-				srcChannel = srcOpenChannels.computeIfAbsent(op, FileStorageDriver::openSrcChan);
-				if (dstChannel == null) {
-					break;
-				}
-				if (srcChannel == null) {
-					if (op.status().equals(Operation.Status.FAIL_IO)) {
-						break;
-					} else {
-						if (invokeCreate(item, op, dstChannel)) {
-							finishOperation((O) op);
-						}
-					}
-				} else { // copy the data from the src channel to the dst channel
-					if (invokeCopy(item, op, srcChannel, dstChannel)) {
-						finishOperation((O) op);
-					}
-				}
-				break;
-				break;
-			case READ:
-				break;
-			case UPDATE:
-				break;
-			case DELETE:
-				break;
-			case LIST:
-				break;
-		}
-	}
-
-	final void finishOperation(final O op) {
-		try {
-			op.startResponse();
-			op.finishResponse();
-			op.status(Operation.Status.SUCC);
-		} catch (final IllegalStateException e) {
-			LogUtil.exception(
-				Level.WARN, e, "{}: finishing the load operation which is in an invalid state", op.toString());
-			op.status(Operation.Status.FAIL_UNKNOWN);
-		}
-	}
-
-	@Override
-	protected int submit(final List<O> ops, final int from, final int to)
-	throws IllegalStateException {
-		return 0;
-	}
-
-	@Override
-	protected int submit(final List<O> ops)
-	throws IllegalStateException {
-		return 0;
-	}
-
-	@Override
 	protected String requestNewPath(final String path) {
 		final File pathFile = FS.getPath(path).toFile();
 		if (!pathFile.exists()) {
@@ -214,38 +134,10 @@ extends AioStorageDriverBase<I, O> {
 	}
 
 	@Override
-	protected final void doClose()
+	protected void doClose()
 	throws IOException {
-
-		srcOpenChannels
-			.values()
-			.stream()
-			.filter(AsyncChannel::isOpen)
-			.forEach(
-				channel -> {
-					try {
-						channel.close();
-					} catch (final IOException e) {
-						LogUtil.exception(Level.WARN, e, "Failed to close the source file channel {}", channel);
-					}
-				});
-		srcOpenChannels.clear();
-
-		dstOpenChannels
-			.values()
-			.stream()
-			.filter(AsyncChannel::isOpen)
-			.forEach(
-				channel -> {
-					try {
-						channel.close();
-					} catch (final IOException e) {
-						LogUtil.exception(Level.WARN, e, "Failed to close the source file channel {}", channel);
-					}
-				});
-		dstOpenChannels.clear();
-
 		super.doClose();
+		dstParentDirs.clear();
 	}
 
 	@Override
