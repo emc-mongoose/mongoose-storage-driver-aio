@@ -30,9 +30,11 @@ import java.nio.file.AccessDeniedException;
 import java.nio.file.FileSystemException;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 public class FileStorageDriver<I extends Item, O extends Operation<I>>
 extends AioStorageDriverBase<I, O> {
@@ -64,7 +66,6 @@ extends AioStorageDriverBase<I, O> {
 	}
 
 	protected AsyncChannel openDestinationChannel(final DataOperation<? extends DataItem> dataOp) {
-		System.out.println("open channel for " + dataOp.item().name() + ", " + dataOp.status() + ", " + dataOp.hashCode());
 		final var fileItemName = dataOp.item().name();
 		final var opType = dataOp.type();
 		final var dstPath = dataOp.dstPath();

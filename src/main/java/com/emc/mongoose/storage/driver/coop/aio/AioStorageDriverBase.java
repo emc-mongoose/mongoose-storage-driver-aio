@@ -45,16 +45,18 @@ implements CompletionHandler<Integer, DataOperation<? extends DataItem>> {
 	@Override
 	protected boolean submit(final O op)
 	throws IllegalStateException {
-
-		if(PENDING.equals(op.status())) {
+		final var status = op.status();
+		if(PENDING.equals(status)) {
 			if(concurrencyThrottle.tryAcquire()) {
 				Loggers.MSG.trace("{}: start operation \"{}\"", stepId, op);
 				op.startRequest();
 			} else {
 				return false;
 			}
-		} else {
+		} else if(ACTIVE.equals(status)){
 			Loggers.MSG.trace("{}: continue the operation \"{}\"", stepId, op);
+		} else {
+			return true; // dirty fix
 		}
 
 		if (op instanceof DataOperation) {
@@ -80,7 +82,7 @@ implements CompletionHandler<Integer, DataOperation<? extends DataItem>> {
 		try {
 			switch (opType) {
 				case NOOP:
-					completeOperation((O) op, srcChannel, dstChannel);
+					completeOperation((O) op, null, null);
 					break;
 				case CREATE:
 					dstChannel = destinationChannel(op);
@@ -194,7 +196,9 @@ implements CompletionHandler<Integer, DataOperation<? extends DataItem>> {
 		final var newCountBytesDone = dataOp.countBytesDone() + n;
 		dataOp.countBytesDone(newCountBytesDone);
 		dataOp.item().position(newCountBytesDone); // TODO correct only for full create/full read
-		handleCompleted((O) dataOp); // may resubmit for the new iteration
+		if(!childOpsQueue.offer((O) dataOp)) {
+			Loggers.ERR.error("{}: failed to resubmit the load operation, the result will be lost", toString());
+		}
 	}
 
 	@Override @SuppressWarnings("unchecked")
@@ -219,7 +223,6 @@ implements CompletionHandler<Integer, DataOperation<? extends DataItem>> {
 				Level.WARN, e, "{}: finishing the load operation which is in an invalid state", op.toString());
 			op.status(Operation.Status.FAIL_UNKNOWN);
 		} finally {
-			System.out.println("Complete " + op.item().name() + ", " + op.status() + ", " + op.hashCode());
 			try {
 				handleCompleted(op);
 			} finally {
@@ -239,7 +242,6 @@ implements CompletionHandler<Integer, DataOperation<? extends DataItem>> {
 					dstOpenChannels.remove(op);
 					if (dstChannel.isOpen()) {
 						try {
-							//System.out.println("close channel for " + op.item().name() + ", " + op.hashCode());
 							dstChannel.close();
 						} catch (final IOException e) {
 							Loggers.ERR.warn("Failed to close the destination file channel");
