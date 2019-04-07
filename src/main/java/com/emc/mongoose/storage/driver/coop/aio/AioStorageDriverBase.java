@@ -196,9 +196,7 @@ implements CompletionHandler<Integer, DataOperation<? extends DataItem>> {
 		final var newCountBytesDone = dataOp.countBytesDone() + n;
 		dataOp.countBytesDone(newCountBytesDone);
 		dataOp.item().position(newCountBytesDone); // TODO correct only for full create/full read
-		if(!childOpsQueue.offer((O) dataOp)) {
-			Loggers.ERR.error("{}: failed to resubmit the load operation, the result will be lost", toString());
-		}
+		handleCompleted((O) dataOp); // will resubmit because the op state is "active"
 	}
 
 	@Override @SuppressWarnings("unchecked")
